@@ -14,33 +14,39 @@ import android.widget.TextView;
 
 import androidx.annotation.NonNull;
 import androidx.fragment.app.Fragment;
-import androidx.fragment.app.FragmentActivity;
-
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
 import java.util.Objects;
-import java.util.Scanner;
+
+import com.android.volley.Request;
+import com.android.volley.RequestQueue;
+import com.android.volley.Response;
+import com.android.volley.VolleyError;
+import com.android.volley.toolbox.StringRequest;
+import com.android.volley.toolbox.Volley;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 
 public class ChoicesFragment extends Fragment {
-    private static final String SCORE_KEY = "scoreCount";
-    private static final String QUESTION_KEY = "currentQuestionIndex";
-    private static final String PREFERENCE_KEY = "quizPreferences";
+    private static final String ERROR_QUESTION = "{\"question\": \"If you are seeing this question, your internet is not connected or is too slow.\", \"correct_answer\": \"I fixed it\", \"choices\": [\"I fixed it\", \"I did not fix it\", \"I did not fix it\", \"I did not fix it\"]}";
+
+    private static final String PREFERENCE_KEY = "preferences";
+    private static final String SCORE_KEY = "score";
+    private static final String CURRENT_QUESTION_KEY = "currentQuestion";
+    private static final String NEXT_QUESTION_KEY = "nextQuestion";
     private static final String TAG = "logTag";
 
-    private int questionIndex;
     private int score;
     private int attempts;
 
-    private String[][] questions;
+    private QuizQuestion currentQuestion;
+    private QuizQuestion nextQuestion;
 
     private Fragment fragment;
     private SharedPreferences.Editor mEditor;
     private Button choiceA, choiceB, choiceC, choiceD;
     private TextView scoreView, questionView;
+
+    private Gson mGson = new GsonBuilder().create();
+    private SharedPreferences mShared;
 
     // The onCreateView method is called when Fragment should create its View object hierarchy,
     // either dynamically or via XML layout inflation. 
@@ -49,36 +55,13 @@ public class ChoicesFragment extends Fragment {
     public View onCreateView(@NonNull LayoutInflater inflater, ViewGroup parent, Bundle savedInstanceState) {
         // Defines the xml file for the fragment
         fragment = getFragmentManager().findFragmentById(R.id.choicesFragment);
-        SharedPreferences mShared = Objects.requireNonNull(this.getActivity()).getSharedPreferences(PREFERENCE_KEY, Context.MODE_PRIVATE);
+        mShared = Objects.requireNonNull(this.getActivity()).getSharedPreferences(PREFERENCE_KEY, Context.MODE_PRIVATE);
         mEditor = mShared.edit();
 
-        try {
-            int lineCount = 0;
-            Scanner lineCounter = new Scanner(Objects.requireNonNull(getContext()).getAssets().open("trivia.txt"));
-            while (lineCounter.hasNextLine()) {
-                lineCounter.nextLine();
-                lineCount++;
-            }
-            lineCount /= 6;
-            questions = new String[lineCount][5];
-            Scanner myReader = new Scanner(Objects.requireNonNull(getContext()).getAssets().open("trivia.txt"));
-            for (int i = 0; i < lineCount; i++)
-            {
-                questions[i] = new String[]{myReader.nextLine(), myReader.nextLine(), myReader.nextLine(), myReader.nextLine(), myReader.nextLine()};
-                myReader.nextLine();
-            }
-            myReader.close();
-        } catch (FileNotFoundException e) {
-            Log.i(TAG, "File not found.");
-            e.printStackTrace();
-        } catch (IOException e) {
-            Log.i(TAG, "IO error.");
-            e.printStackTrace();
-        }
-
-        questionIndex = mShared.getInt(QUESTION_KEY, 0);
-        if (questionIndex == -1) {
-            generateNewIndex();
+        currentQuestion = mGson.fromJson(mShared.getString(CURRENT_QUESTION_KEY, "{\"question\": \"Welcome to the quiz! Select the correct answer to begin.\", \"correct_answer\": \"Correct answer\", \"choices\": [\"Correct answer\", \"Wrong answer\", \"Wrong answer\", \"Wrong answer\"]}"), QuizQuestion.class);
+        nextQuestion = mGson.fromJson(mShared.getString(NEXT_QUESTION_KEY, ERROR_QUESTION), QuizQuestion.class);
+        if (nextQuestion.equals(ERROR_QUESTION)) {
+            fetchNextQuestion();
         }
 
         score = mShared.getInt(SCORE_KEY, 0);
@@ -119,10 +102,13 @@ public class ChoicesFragment extends Fragment {
         @Override
         public void onClick(View v) {
             Button b = (Button) v;
-            if(b.getText() == questions[questionIndex][1]) {
+            if(currentQuestion.checkAnswer((String) b.getText())) {
                 score += 10;
                 attempts = 0;
-                generateNewIndex();
+                currentQuestion = nextQuestion;
+                mEditor.putString(CURRENT_QUESTION_KEY, mShared.getString(NEXT_QUESTION_KEY, ERROR_QUESTION));
+                nextQuestion = mGson.fromJson(ERROR_QUESTION, QuizQuestion.class);
+                fetchNextQuestion();
                 updateDisplay();
                 choiceA.setEnabled(true);
                 choiceB.setEnabled(true);
@@ -156,24 +142,57 @@ public class ChoicesFragment extends Fragment {
     };
 
     private void updateDisplay() {
-        questionView.setText(questions[questionIndex][0]);
-        String[] choices = questions[questionIndex].clone();
-        List<String> choiceList = Arrays.asList(choices).subList(1, 5);
-        Collections.shuffle(choiceList);
-        choiceList.toArray(choices);
+        questionView.setText(currentQuestion.getQuestion());
+        String[] choices = currentQuestion.getChoices();
+        // List<String> choiceList = Arrays.asList(choices).subList(1, 5);
+        // Collections.shuffle(choiceList);
+        // choiceList.toArray(choices);
         choiceA.setText(choices[0]);
         choiceB.setText(choices[1]);
         choiceC.setText(choices[2]);
         choiceD.setText(choices[3]);
     }
 
-    private void generateNewIndex() {
-        /*int curIndex = questionIndex;
-        while (questionIndex == curIndex) {
-            questionIndex = (int)(Math.random() * questions.length);
-        }*/
-        questionIndex = (questionIndex + 1) % questions.length;
-        mEditor.putInt(QUESTION_KEY, questionIndex);
-        mEditor.apply();
+    private void fetchNextQuestion() {
+        // Instantiate the RequestQueue.
+        RequestQueue queue = Volley.newRequestQueue(getContext());
+        String url ="https://quiz-api.sites.tjhsst.edu/get_question/";
+
+        // Request a string response from the provided URL.
+        StringRequest stringRequest = new StringRequest(Request.Method.GET, url,
+                new Response.Listener<String>() {
+                    @Override
+                    public void onResponse(String response) {
+                        // Display the first 500 characters of the response string.
+                        // Log.i(TAG, response);
+                        mEditor.putString(NEXT_QUESTION_KEY, response);
+                        mEditor.apply();
+                        nextQuestion = mGson.fromJson(response, QuizQuestion.class);
+                    }
+                }, new Response.ErrorListener() {
+            @Override
+            public void onErrorResponse(VolleyError error) {
+                Log.i(TAG, String.valueOf(error));
+            }
+        });
+        queue.add(stringRequest);
+    }
+}
+
+class QuizQuestion {
+    private String question;
+    private String correct_answer;
+    private String[] choices;
+
+    public String getQuestion() {
+        return question;
+    }
+
+    public String[] getChoices() {
+        return choices;
+    }
+
+    public boolean checkAnswer(String answer) {
+        return answer.equals(correct_answer);
     }
 }
